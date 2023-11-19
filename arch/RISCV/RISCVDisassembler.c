@@ -40,16 +40,15 @@
 */
 static uint64_t getFeatureBits(int mode) 
 {
-	if (mode == CS_MODE_RISCV32)
-		// return b11110
-		return RISCV_FeatureStdExtM | RISCV_FeatureStdExtA |
+	uint64_t ret = RISCV_FeatureStdExtM | RISCV_FeatureStdExtA |
 		       RISCV_FeatureStdExtF | RISCV_FeatureStdExtD ;
-	else
-		
-		// CS_MODE_RISCV64, return b11111
-		return RISCV_Feature64Bit   | RISCV_FeatureStdExtM | 
-		       RISCV_FeatureStdExtA | RISCV_FeatureStdExtF | 
-		       RISCV_FeatureStdExtD ;
+
+	if (mode & CS_MODE_RISCV64)
+		ret |= RISCV_Feature64Bit;
+	if (mode & CS_MODE_RISCVC)
+		ret |= RISCV_FeatureStdExtC;
+
+	return ret;
 }
 
 #define GET_REGINFO_ENUM
@@ -74,7 +73,7 @@ static DecodeStatus DecodeGPRRegisterClass(MCInst *Inst, uint64_t RegNo,
 {
   	unsigned Reg = 0;
 
-  	if (RegNo > sizeof(GPRDecoderTable))
+  	if (RegNo >= ARR_SIZE(GPRDecoderTable))
     		return MCDisassembler_Fail;
 
   	// We must define our own mapping from RegNo to register identifier.
@@ -102,7 +101,7 @@ static DecodeStatus DecodeFPR32RegisterClass(MCInst *Inst, uint64_t RegNo,
 {
   	unsigned Reg = 0;
 
-  	if (RegNo > sizeof(FPR32DecoderTable))
+  	if (RegNo >= ARR_SIZE(FPR32DecoderTable))
     		return MCDisassembler_Fail;
 
   	// We must define our own mapping from RegNo to register identifier.
@@ -142,7 +141,7 @@ static DecodeStatus DecodeFPR64RegisterClass(MCInst *Inst, uint64_t RegNo,
 {
   	unsigned Reg = 0;
 
-  	if (RegNo > sizeof(FPR64DecoderTable))
+  	if (RegNo >= ARR_SIZE(FPR64DecoderTable))
     		return MCDisassembler_Fail;
 
  	// We must define our own mapping from RegNo to register identifier.
@@ -356,7 +355,7 @@ static DecodeStatus RISCVDisassembler_getInstruction(int mode, MCInst *MI,
       		Inst = code[0] | (code[1] << 8) | (code[2] << 16) | ((uint32_t)code[3] << 24);
 		init_MI_insn_detail(MI);
 		// Now we need mark what instruction need fix effective address output.
-    		if (MI->csh->detail) 
+		if (MI->csh->detail_opt)
 			markLSInsn(MI, Inst);
       		Result = decodeInstruction(DecoderTable32, MI, Inst, Address, MRI, mode);
   	} else {

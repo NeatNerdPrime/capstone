@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #endif
 
+#include "../../Mapping.h"
+#include "../../MCInstPrinter.h"
 #include "X86Mapping.h"
 #include "X86DisassemblerDecoder.h"
 
@@ -856,7 +858,7 @@ const char *X86_reg_name(csh handle, unsigned int reg)
 }
 
 #ifndef CAPSTONE_DIET
-static const char *insn_name_maps[] = {
+static const char * const insn_name_maps[] = {
 	NULL, // X86_INS_INVALID
 #ifndef CAPSTONE_X86_REDUCE
 #include "X86MappingInsnName.inc"
@@ -1016,7 +1018,7 @@ void X86_get_insn_id(cs_struct *h, cs_insn *insn, unsigned int id)
 	if (i != -1) {
 		insn->id = insns[i].mapid;
 
-		if (h->detail) {
+		if (h->detail_opt) {
 #ifndef CAPSTONE_DIET
 			memcpy(insn->detail->regs_read, insns[i].regs_use, sizeof(insns[i].regs_use));
 			insn->detail->regs_read_count = (uint8_t)count_positive(insns[i].regs_use);
@@ -1216,7 +1218,7 @@ struct insn_reg2 {
 	enum cs_ac_type access1, access2;
 };
 
-static struct insn_reg insn_regs_att[] = {
+static const struct insn_reg insn_regs_att[] = {
 	{ X86_INSB, X86_REG_DX, CS_AC_READ },
 	{ X86_INSL, X86_REG_DX, CS_AC_READ },
 	{ X86_INSW, X86_REG_DX, CS_AC_READ },
@@ -1309,7 +1311,7 @@ static struct insn_reg insn_regs_att[] = {
 	{ X86_XCHG64ar, X86_REG_RAX, CS_AC_WRITE | CS_AC_READ },
 };
 
-static struct insn_reg insn_regs_att_extra[] = {
+static const struct insn_reg insn_regs_att_extra[] = {
 	// dummy entry, to avoid empty array
 	{ 0, 0 },
 #ifndef CAPSTONE_X86_REDUCE
@@ -1330,7 +1332,7 @@ static struct insn_reg insn_regs_att_extra[] = {
 #endif
 };
 
-static struct insn_reg insn_regs_intel[] = {
+static const struct insn_reg insn_regs_intel[] = {
 	{ X86_ADC16i16, X86_REG_AX, CS_AC_WRITE | CS_AC_READ },
 	{ X86_ADC32i32, X86_REG_EAX, CS_AC_WRITE | CS_AC_READ },
 	{ X86_ADC64i32, X86_REG_RAX, CS_AC_WRITE | CS_AC_READ },
@@ -1420,7 +1422,7 @@ static struct insn_reg insn_regs_intel[] = {
 	{ X86_XOR8i8, X86_REG_AL, CS_AC_WRITE | CS_AC_READ },
 };
 
-static struct insn_reg insn_regs_intel_extra[] = {
+static const struct insn_reg insn_regs_intel_extra[] = {
 	// dummy entry, to avoid empty array
 	{ 0, 0, 0 },
 #ifndef CAPSTONE_X86_REDUCE
@@ -1446,7 +1448,7 @@ static struct insn_reg insn_regs_intel_extra[] = {
 #endif
 };
 
-static struct insn_reg2 insn_regs_intel2[] = {
+static const struct insn_reg2 insn_regs_intel2[] = {
 	{ X86_IN16rr, X86_REG_AX, X86_REG_DX, CS_AC_WRITE, CS_AC_READ },
 	{ X86_IN32rr, X86_REG_EAX, X86_REG_DX, CS_AC_WRITE, CS_AC_READ },
 	{ X86_IN8rr, X86_REG_AL, X86_REG_DX, CS_AC_WRITE, CS_AC_READ },
@@ -1457,7 +1459,7 @@ static struct insn_reg2 insn_regs_intel2[] = {
 	{ X86_OUT8rr, X86_REG_DX, X86_REG_AL, CS_AC_READ, CS_AC_READ },
 };
 
-static int binary_search1(struct insn_reg *insns, unsigned int max, unsigned int id)
+static int binary_search1(const struct insn_reg *insns, unsigned int max, unsigned int id)
 {
 	unsigned int first, last, mid;
 
@@ -1486,7 +1488,7 @@ static int binary_search1(struct insn_reg *insns, unsigned int max, unsigned int
 	return -1;
 }
 
-static int binary_search2(struct insn_reg2 *insns, unsigned int max, unsigned int id)
+static int binary_search2(const struct insn_reg2 *insns, unsigned int max, unsigned int id)
 {
 	unsigned int first, last, mid;
 
@@ -1622,7 +1624,6 @@ static bool valid_repne(cs_struct *h, unsigned int opcode)
 			case X86_INS_MOVSB:
 			case X86_INS_MOVSS:
 			case X86_INS_MOVSW:
-			case X86_INS_MOVSD:
 			case X86_INS_MOVSQ:
 
 			case X86_INS_LODSB:
@@ -1644,6 +1645,11 @@ static bool valid_repne(cs_struct *h, unsigned int opcode)
 			case X86_INS_OUTSD:
 
 				return true;
+
+			case X86_INS_MOVSD:
+				if (opcode == X86_MOVSW) // REP MOVSB
+					return true;
+				return false;
 
 			case X86_INS_CMPSD:
 				if (opcode == X86_CMPSL) // REP CMPSD
@@ -1777,6 +1783,24 @@ static bool valid_rep(cs_struct *h, unsigned int opcode)
 	return false;
 }
 
+// given MCInst's id, find if this is a "repz ret" instruction
+// gcc generates "repz ret" (f3 c3) instructions in some cases as an
+// optimization for AMD platforms, see:
+// https://gcc.gnu.org/legacy-ml/gcc-patches/2003-05/msg02117.html
+static bool valid_ret_repz(cs_struct *h, unsigned int opcode)
+{
+	unsigned int id;
+	unsigned int i = find_insn(opcode);
+
+	if (i != -1) {
+		id = insns[i].mapid;
+		return id == X86_INS_RET;
+	}
+
+	// not found
+	return false;
+}
+
 // given MCInst's id, find out if this insn is valid for REPE prefix
 static bool valid_repe(cs_struct *h, unsigned int opcode)
 {
@@ -1815,11 +1839,32 @@ static bool valid_repe(cs_struct *h, unsigned int opcode)
 	return false;
 }
 
+// Given MCInst's id, find out if this insn is valid for NOTRACK prefix.
+// NOTRACK prefix is valid for CALL/JMP.
+static bool valid_notrack(cs_struct *h, unsigned int opcode)
+{
+	unsigned int id;
+	unsigned int i = find_insn(opcode);
+	if (i != -1) {
+		id = insns[i].mapid;
+		switch(id) {
+			default:
+				return false;
+			case X86_INS_CALL:
+			case X86_INS_JMP:
+				return true;
+		}
+	}
+
+	// not found
+	return false;
+}
+
 #ifndef CAPSTONE_DIET
 // add *CX register to regs_read[] & regs_write[]
 static void add_cx(MCInst *MI)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		x86_reg cx;
 
 		if (MI->csh->mode & CS_MODE_16)
@@ -1877,7 +1922,7 @@ bool X86_lockrep(MCInst *MI, SStream *O)
 #if 0
 				if (opcode == X86_MULPDrr) {
 					MCInst_setOpcode(MI, X86_MULSDrr);
-					SStream_concat(O, "mulsd\t");
+					SStream_concat0(O, "mulsd\t");
 					res = true;
 				}
 #endif
@@ -1910,6 +1955,8 @@ bool X86_lockrep(MCInst *MI, SStream *O)
 			} else if (valid_repe(MI->csh, opcode)) {
 				SStream_concat(O, "repe|");
 				add_cx(MI);
+			} else if (valid_ret_repz(MI->csh, opcode)) {
+				SStream_concat(O, "repz|");
 			} else {
 				// invalid prefix
 				MI->x86_prefix[0] = 0;
@@ -1920,7 +1967,7 @@ bool X86_lockrep(MCInst *MI, SStream *O)
 				// FIXME: remove this special case?
 				if (opcode == X86_MULPDrr) {
 					MCInst_setOpcode(MI, X86_MULSSrr);
-					SStream_concat(O, "mulss\t");
+					SStream_concat0(O, "mulss\t");
 					res = true;
 				}
 #endif
@@ -1943,8 +1990,19 @@ bool X86_lockrep(MCInst *MI, SStream *O)
 			break;
 	}
 
+	switch(MI->x86_prefix[1]) {
+		default:
+			break;
+		case 0x3e:
+			opcode = MCInst_getOpcode(MI);
+			if (valid_notrack(MI->csh, opcode)) {
+				SStream_concat(O, "notrack|");
+			}
+			break;
+	}
+
 	// copy normalized prefix[] back to x86.prefix[]
-	if (MI->csh->detail)
+	if (MI->csh->detail_opt)
 		memcpy(MI->flat_insn->detail->x86.prefix, MI->x86_prefix, ARR_SIZE(MI->x86_prefix));
 
 	return res;
@@ -1952,7 +2010,7 @@ bool X86_lockrep(MCInst *MI, SStream *O)
 
 void op_addReg(MCInst *MI, int reg)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count].type = X86_OP_REG;
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count].reg = reg;
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count].size = MI->csh->regsize_map[reg];
@@ -1965,7 +2023,7 @@ void op_addReg(MCInst *MI, int reg)
 
 void op_addImm(MCInst *MI, int v)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count].type = X86_OP_IMM;
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count].imm = v;
 		// if op_count > 0, then this operand's size is taken from the destination op
@@ -1985,28 +2043,28 @@ void op_addImm(MCInst *MI, int v)
 
 void op_addXopCC(MCInst *MI, int v)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.xop_cc = v;
 	}
 }
 
 void op_addSseCC(MCInst *MI, int v)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.sse_cc = v;
 	}
 }
 
 void op_addAvxCC(MCInst *MI, int v)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.avx_cc = v;
 	}
 }
 
 void op_addAvxRoundingMode(MCInst *MI, int v)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.avx_rm = v;
 	}
 }
@@ -2014,7 +2072,7 @@ void op_addAvxRoundingMode(MCInst *MI, int v)
 // below functions supply details to X86GenAsmWriter*.inc
 void op_addAvxZeroOpmask(MCInst *MI)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		// link with the previous operand
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count - 1].avx_zero_opmask = true;
 	}
@@ -2022,14 +2080,14 @@ void op_addAvxZeroOpmask(MCInst *MI)
 
 void op_addAvxSae(MCInst *MI)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		MI->flat_insn->detail->x86.avx_sae = true;
 	}
 }
 
 void op_addAvxBroadcast(MCInst *MI, x86_avx_bcast v)
 {
-	if (MI->csh->detail) {
+	if (MI->csh->detail_opt) {
 		// link with the previous operand
 		MI->flat_insn->detail->x86.operands[MI->flat_insn->detail->x86.op_count - 1].avx_bcast = v;
 	}
@@ -2042,7 +2100,7 @@ typedef struct insn_op {
 	uint8_t access[6];
 } insn_op;
 
-static insn_op insn_ops[] = {
+static const insn_op insn_ops[] = {
 #ifdef CAPSTONE_X86_REDUCE
 #include "X86MappingInsnOp_reduce.inc"
 #else
@@ -2051,7 +2109,7 @@ static insn_op insn_ops[] = {
 };
 
 // given internal insn id, return operand access info
-uint8_t *X86_get_op_access(cs_struct *h, unsigned int id, uint64_t *eflags)
+const uint8_t *X86_get_op_access(cs_struct *h, unsigned int id, uint64_t *eflags)
 {
 	unsigned int i = find_insn(id);
 	if (i != -1) {
@@ -2117,7 +2175,7 @@ void X86_reg_access(const cs_insn *insn,
 
 // map immediate size to instruction id
 // this array is sorted for binary searching
-static struct size_id {
+static const struct size_id {
 	uint8_t		enc_size;
 	uint8_t		size;
 	uint16_t 	id;
@@ -2165,7 +2223,7 @@ uint8_t X86_immediate_size(unsigned int id, uint8_t *enc_size)
 #include "X86GenRegisterInfo.inc"
 
 // map internal register id to public register id
-static struct register_map {
+static const struct register_map {
 	unsigned short		id;
 	unsigned short		pub_id;
 } reg_map [] = {

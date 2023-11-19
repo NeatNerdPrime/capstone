@@ -25,7 +25,7 @@
 
 // Issue #681: Windows kernel does not support formatting float point
 #if defined(_KERNEL_MODE) && !defined(CAPSTONE_DIET)
-#if defined(CAPSTONE_HAS_ARM) || defined(CAPSTONE_HAS_ARM64) || defined(CAPSTONE_HAS_M68K)
+#if defined(CAPSTONE_HAS_ARM) || defined(CAPSTONE_HAS_AARCH64) || defined(CAPSTONE_HAS_M68K)
 #define CAPSTONE_STR_INTERNAL(x) #x
 #define CAPSTONE_STR(x) CAPSTONE_STR_INTERNAL(x)
 #define CAPSTONE_MSVC_WRANING_PREFIX __FILE__ "("CAPSTONE_STR(__LINE__)") : warning message : "
@@ -68,8 +68,10 @@
 #include "arch/RISCV/RISCVModule.h"
 #include "arch/MOS65XX/MOS65XXModule.h"
 #include "arch/BPF/BPFModule.h"
+#include "arch/SH/SHModule.h"
+#include "arch/TriCore/TriCoreModule.h"
 
-static struct {
+static const struct {
 	// constructor initialization
 	cs_err (*arch_init)(cs_struct *);
 	// support cs_option()
@@ -88,7 +90,7 @@ static struct {
 #else
 	{ NULL, NULL, 0 },
 #endif
-#ifdef CAPSTONE_HAS_ARM64
+#ifdef CAPSTONE_HAS_AARCH64
 	{
 		AArch64_global_init,
 		AArch64_option,
@@ -121,7 +123,7 @@ static struct {
 		PPC_global_init,
 		PPC_option,
 		~(CS_MODE_LITTLE_ENDIAN | CS_MODE_32 | CS_MODE_64 | CS_MODE_BIG_ENDIAN
-				| CS_MODE_QPX),
+				| CS_MODE_QPX | CS_MODE_PS | CS_MODE_BOOKE),
 	},
 #else
 	{ NULL, NULL, 0 },
@@ -231,15 +233,37 @@ static struct {
 #else
 	{ NULL, NULL, 0 },
 #endif
+#ifdef CAPSTONE_HAS_SH
+	{
+		SH_global_init,
+		SH_option,
+		~(CS_MODE_SH2 | CS_MODE_SH2A | CS_MODE_SH3 |
+		  CS_MODE_SH4 | CS_MODE_SH4A |
+		  CS_MODE_SHFPU | CS_MODE_SHDSP|CS_MODE_BIG_ENDIAN),
+	},
+#else
+	{ NULL, NULL, 0 },
+#endif
+#ifdef CAPSTONE_HAS_TRICORE
+	{
+		TRICORE_global_init,
+		TRICORE_option,
+		~(CS_MODE_TRICORE_110 | CS_MODE_TRICORE_120 | CS_MODE_TRICORE_130
+		| CS_MODE_TRICORE_131 | CS_MODE_TRICORE_160 | CS_MODE_TRICORE_161
+		| CS_MODE_TRICORE_162 | CS_MODE_LITTLE_ENDIAN),
+	},
+#else
+	{ NULL, NULL, 0 },
+#endif
 };
 
 // bitmask of enabled architectures
-static uint32_t all_arch = 0
+static const uint32_t all_arch = 0
 #ifdef CAPSTONE_HAS_ARM
 	| (1 << CS_ARCH_ARM)
 #endif
-#ifdef CAPSTONE_HAS_ARM64
-	| (1 << CS_ARCH_ARM64)
+#if defined(CAPSTONE_HAS_AARCH64) || defined(CAPSTONE_HAS_ARM64)
+	| (1 << CS_ARCH_AARCH64)
 #endif
 #ifdef CAPSTONE_HAS_MIPS
 	| (1 << CS_ARCH_MIPS)
@@ -282,6 +306,12 @@ static uint32_t all_arch = 0
 #endif
 #ifdef CAPSTONE_HAS_RISCV
 	| (1 << CS_ARCH_RISCV)
+#endif
+#ifdef CAPSTONE_HAS_SH
+	| (1 << CS_ARCH_SH)
+#endif
+#ifdef CAPSTONE_HAS_TRICORE
+	| (1 << CS_ARCH_TRICORE)
 #endif
 ;
 
@@ -348,14 +378,16 @@ CAPSTONE_EXPORT
 bool CAPSTONE_API cs_support(int query)
 {
 	if (query == CS_ARCH_ALL)
-		return all_arch == ((1 << CS_ARCH_ARM)   | (1 << CS_ARCH_ARM64)      |
+		return all_arch ==
+				    ((1 << CS_ARCH_ARM)  | (1 << CS_ARCH_AARCH64)    |
 				    (1 << CS_ARCH_MIPS)  | (1 << CS_ARCH_X86)        |
 				    (1 << CS_ARCH_PPC)   | (1 << CS_ARCH_SPARC)      |
 				    (1 << CS_ARCH_SYSZ)  | (1 << CS_ARCH_XCORE)      |
 				    (1 << CS_ARCH_M68K)  | (1 << CS_ARCH_TMS320C64X) |
 				    (1 << CS_ARCH_M680X) | (1 << CS_ARCH_EVM)        |
-				    (1 << CS_ARCH_RISCV) | (1 << CS_ARCH_MOS65XX)    | 
-				    (1 << CS_ARCH_WASM)  | (1 << CS_ARCH_BPF));
+				    (1 << CS_ARCH_RISCV) | (1 << CS_ARCH_MOS65XX)    |
+				    (1 << CS_ARCH_WASM)  | (1 << CS_ARCH_BPF)        |
+				    (1 << CS_ARCH_SH)    | (1 << CS_ARCH_TRICORE));
 
 	if ((unsigned int)query < CS_ARCH_MAX)
 		return all_arch & (1 << query);
@@ -458,7 +490,7 @@ cs_err CAPSTONE_API cs_open(cs_arch arch, cs_mode mode, csh *handle)
 		ud->arch = arch;
 		ud->mode = mode;
 		// by default, do not break instruction into details
-		ud->detail = CS_OPT_OFF;
+		ud->detail_opt = CS_OPT_OFF;
 
 		// default skipdata setup
 		ud->skipdata_setup.mnemonic = SKIPDATA_MNEM;
@@ -531,6 +563,27 @@ static int str_replace(char *result, char *target, const char *str1, char *str2)
 		return -1;
 }
 
+/// The asm string sometimes has a leading space or tab.
+/// Here we remove it.
+static void fixup_asm_string(char *asm_str) {
+	if (!asm_str) {
+		return;
+	}
+	int i = 0;
+	int k = 0;
+	bool text_reached = (asm_str[0] != ' ' && asm_str[0] != '\t');
+	while (asm_str[i]) {
+		if (!text_reached && (asm_str[i] == ' ' || asm_str[i] == '\t')) {
+			++i;
+			text_reached = true;
+			continue;
+		}
+		asm_str[k] = asm_str[i];
+		++k, ++i;
+	}
+	asm_str[k] = '\0';
+}
+
 // fill insn with mnemonic & operands info
 static void fill_insn(struct cs_struct *handle, cs_insn *insn, char *buffer, MCInst *mci,
 		PostPrinter_t postprinter, const uint8_t *code)
@@ -538,11 +591,13 @@ static void fill_insn(struct cs_struct *handle, cs_insn *insn, char *buffer, MCI
 #ifndef CAPSTONE_DIET
 	char *sp, *mnem;
 #endif
+	fixup_asm_string(buffer);
 	uint16_t copy_size = MIN(sizeof(insn->bytes), insn->size);
 
 	// fill the instruction bytes.
 	// we might skip some redundant bytes in front in the case of X86
 	memcpy(insn->bytes, code + insn->size - copy_size, copy_size);
+	insn->op_str[0] = '\0';
 	insn->size = copy_size;
 
 	// alias instruction might have ID saved in OpcodePub
@@ -554,9 +609,8 @@ static void fill_insn(struct cs_struct *handle, cs_insn *insn, char *buffer, MCI
 		postprinter((csh)handle, insn, buffer, mci);
 
 #ifndef CAPSTONE_DIET
-	// fill in mnemonic & operands
-	// find first space or tab
 	mnem = insn->mnemonic;
+	// memset(mnem, 0, CS_MNEMONIC_SIZE);
 	for (sp = buffer; *sp; sp++) {
 		if (*sp == ' '|| *sp == '\t')
 			break;
@@ -597,6 +651,7 @@ static void fill_insn(struct cs_struct *handle, cs_insn *insn, char *buffer, MCI
 		insn->op_str[sizeof(insn->op_str) - 1] = '\0';
 	} else
 		insn->op_str[0] = '\0';
+
 #endif
 }
 
@@ -614,7 +669,7 @@ static uint8_t skipdata_size(cs_struct *handle)
 				return 2;
 			// otherwise, skip 4 bytes
 			return 4;
-		case CS_ARCH_ARM64:
+		case CS_ARCH_AARCH64:
 		case CS_ARCH_MIPS:
 		case CS_ARCH_PPC:
 		case CS_ARCH_SPARC:
@@ -655,8 +710,14 @@ static uint8_t skipdata_size(cs_struct *handle)
 		case CS_ARCH_RISCV:
 			// special compress mode
 			if (handle->mode & CS_MODE_RISCVC)
-				return 1;
+				return 2;
 			return 4;
+		case CS_ARCH_SH:
+			return 2;
+		case CS_ARCH_TRICORE:
+			// TriCore instruction's length can be 2 or 4 bytes,
+			// so we just skip 2 bytes
+			return 2;
 	}
 }
 
@@ -693,7 +754,7 @@ cs_err CAPSTONE_API cs_option(csh ud, cs_opt_type type, size_t value)
 			return CS_ERR_OK;
 
 		case CS_OPT_DETAIL:
-			handle->detail = (cs_opt_value)value;
+			handle->detail_opt |= (cs_opt_value)value;
 			return CS_ERR_OK;
 
 		case CS_OPT_SKIPDATA:
@@ -707,8 +768,12 @@ cs_err CAPSTONE_API cs_option(csh ud, cs_opt_type type, size_t value)
 			return CS_ERR_OK;
 
 		case CS_OPT_SKIPDATA_SETUP:
-			if (value)
+			if (value) {
 				handle->skipdata_setup = *((cs_opt_skipdata *)value);
+				if (handle->skipdata_setup.mnemonic == NULL) {
+					handle->skipdata_setup.mnemonic = SKIPDATA_MNEM;
+				}
+			}
 			return CS_ERR_OK;
 
 		case CS_OPT_MNEMONIC:
@@ -772,6 +837,10 @@ cs_err CAPSTONE_API cs_option(csh ud, cs_opt_type type, size_t value)
 			if (value & arch_configs[handle->arch].arch_disallowed_mode_mask) {
 				return CS_ERR_OPTION;
 			}
+			break;
+		case CS_OPT_NO_BRANCH_OFFSET:
+			if (handle->PrintBranchImmNotAsAddress)
+				return CS_ERR_OK;
 			break;
 	}
 
@@ -841,10 +910,6 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size, uint64
 
 	handle->errnum = CS_ERR_OK;
 
-	// reset IT block of ARM structure
-	if (handle->arch == CS_ARCH_ARM)
-		handle->ITBlock.size = 0;
-
 #ifdef CAPSTONE_USE_SYS_DYN_MEM
 	if (count > 0 && count <= INSN_CACHE_SIZE)
 		cache_size = (unsigned int) count;
@@ -856,7 +921,7 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size, uint64
 	size_org = size;
 
 	total_size = sizeof(cs_insn) * cache_size;
-	total = cs_mem_malloc(total_size);
+	total = cs_mem_calloc(sizeof(cs_insn), cache_size);
 	if (total == NULL) {
 		// insufficient memory
 		handle->errnum = CS_ERR_MEM;
@@ -872,7 +937,7 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size, uint64
 		// relative branches need to know the address & size of current insn
 		mci.address = offset;
 
-		if (handle->detail) {
+		if (handle->detail_opt) {
 			// allocate memory for @detail pointer
 			insn_cache->detail = cs_mem_malloc(sizeof(cs_detail));
 		} else {
@@ -911,7 +976,7 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size, uint64
 			// encounter a broken instruction
 
 			// free memory of @detail pointer
-			if (handle->detail) {
+			if (handle->detail_opt) {
 				cs_mem_free(insn_cache->detail);
 			}
 
@@ -966,7 +1031,7 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size, uint64
 			total_size += (sizeof(cs_insn) * cache_size);
 			tmp = cs_mem_realloc(total, total_size);
 			if (tmp == NULL) {	// insufficient memory
-				if (handle->detail) {
+				if (handle->detail_opt) {
 					insn_cache = (cs_insn *)total;
 					for (i = 0; i < c; i++, insn_cache++)
 						cs_mem_free(insn_cache->detail);
@@ -1001,7 +1066,7 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size, uint64
 		tmp = cs_mem_realloc(total, total_size - (cache_size - f) * sizeof(*insn_cache));
 		if (tmp == NULL) {	// insufficient memory
 			// free all detail pointers
-			if (handle->detail) {
+			if (handle->detail_opt) {
 				insn_cache = (cs_insn *)total;
 				for (i = 0; i < c; i++, insn_cache++)
 					cs_mem_free(insn_cache->detail);
@@ -1047,7 +1112,7 @@ cs_insn * CAPSTONE_API cs_malloc(csh ud)
 		handle->errnum = CS_ERR_MEM;
 		return NULL;
 	} else {
-		if (handle->detail) {
+		if (handle->detail_opt) {
 			// allocate memory for @detail pointer
 			insn->detail = cs_mem_malloc(sizeof(cs_detail));
 			if (insn->detail == NULL) {	// insufficient memory
@@ -1158,7 +1223,7 @@ bool CAPSTONE_API cs_disasm_iter(csh ud, const uint8_t **code, size_t *size,
 	return true;
 }
 
-// return friendly name of regiser in a string
+// return friendly name of register in a string
 CAPSTONE_EXPORT
 const char * CAPSTONE_API cs_reg_name(csh ud, unsigned int reg)
 {
@@ -1204,7 +1269,7 @@ bool CAPSTONE_API cs_insn_group(csh ud, const cs_insn *insn, unsigned int group_
 
 	handle = (struct cs_struct *)(uintptr_t)ud;
 
-	if (!handle->detail) {
+	if (!handle->detail_opt) {
 		handle->errnum = CS_ERR_DETAIL;
 		return false;
 	}
@@ -1231,7 +1296,7 @@ bool CAPSTONE_API cs_reg_read(csh ud, const cs_insn *insn, unsigned int reg_id)
 
 	handle = (struct cs_struct *)(uintptr_t)ud;
 
-	if (!handle->detail) {
+	if (!handle->detail_opt) {
 		handle->errnum = CS_ERR_DETAIL;
 		return false;
 	}
@@ -1258,7 +1323,7 @@ bool CAPSTONE_API cs_reg_write(csh ud, const cs_insn *insn, unsigned int reg_id)
 
 	handle = (struct cs_struct *)(uintptr_t)ud;
 
-	if (!handle->detail) {
+	if (!handle->detail_opt) {
 		handle->errnum = CS_ERR_DETAIL;
 		return false;
 	}
@@ -1286,7 +1351,7 @@ int CAPSTONE_API cs_op_count(csh ud, const cs_insn *insn, unsigned int op_type)
 
 	handle = (struct cs_struct *)(uintptr_t)ud;
 
-	if (!handle->detail) {
+	if (!handle->detail_opt) {
 		handle->errnum = CS_ERR_DETAIL;
 		return -1;
 	}
@@ -1312,9 +1377,9 @@ int CAPSTONE_API cs_op_count(csh ud, const cs_insn *insn, unsigned int op_type)
 				if (insn->detail->arm.operands[i].type == (arm_op_type)op_type)
 					count++;
 			break;
-		case CS_ARCH_ARM64:
-			for (i = 0; i < insn->detail->arm64.op_count; i++)
-				if (insn->detail->arm64.operands[i].type == (arm64_op_type)op_type)
+		case CS_ARCH_AARCH64:
+			for (i = 0; i < insn->detail->aarch64.op_count; i++)
+				if (insn->detail->aarch64.operands[i].type == (aarch64_op_type)op_type)
 					count++;
 			break;
 		case CS_ARCH_X86:
@@ -1384,6 +1449,11 @@ int CAPSTONE_API cs_op_count(csh ud, const cs_insn *insn, unsigned int op_type)
 				if (insn->detail->riscv.operands[i].type == (riscv_op_type)op_type)
 					count++;
 			break;
+		case CS_ARCH_TRICORE:
+			for (i = 0; i < insn->detail->tricore.op_count; i++)
+				if (insn->detail->tricore.operands[i].type == (tricore_op_type)op_type)
+					count++;
+			break;
 	}
 
 	return count;
@@ -1400,7 +1470,7 @@ int CAPSTONE_API cs_op_index(csh ud, const cs_insn *insn, unsigned int op_type,
 
 	handle = (struct cs_struct *)(uintptr_t)ud;
 
-	if (!handle->detail) {
+	if (!handle->detail_opt) {
 		handle->errnum = CS_ERR_DETAIL;
 		return -1;
 	}
@@ -1429,9 +1499,9 @@ int CAPSTONE_API cs_op_index(csh ud, const cs_insn *insn, unsigned int op_type,
 					return i;
 			}
 			break;
-		case CS_ARCH_ARM64:
-			for (i = 0; i < insn->detail->arm64.op_count; i++) {
-				if (insn->detail->arm64.operands[i].type == (arm64_op_type)op_type)
+		case CS_ARCH_AARCH64:
+			for (i = 0; i < insn->detail->aarch64.op_count; i++) {
+				if (insn->detail->aarch64.operands[i].type == (aarch64_op_type)op_type)
 					count++;
 				if (count == post)
 					return i;
@@ -1480,6 +1550,14 @@ int CAPSTONE_API cs_op_index(csh ud, const cs_insn *insn, unsigned int op_type,
 		case CS_ARCH_XCORE:
 			for (i = 0; i < insn->detail->xcore.op_count; i++) {
 				if (insn->detail->xcore.operands[i].type == (xcore_op_type)op_type)
+					count++;
+				if (count == post)
+					return i;
+			}
+			break;
+		case CS_ARCH_TRICORE:
+			for (i = 0; i < insn->detail->tricore.op_count; i++) {
+				if (insn->detail->tricore.operands[i].type == (tricore_op_type)op_type)
 					count++;
 				if (count == post)
 					return i;
@@ -1551,6 +1629,14 @@ int CAPSTONE_API cs_op_index(csh ud, const cs_insn *insn, unsigned int op_type,
 					return i;
 			}
 			break;
+		case CS_ARCH_SH:
+			for (i = 0; i < insn->detail->sh.op_count; i++) {
+				if (insn->detail->sh.operands[i].type == (sh_op_type)op_type)
+					count++;
+				if (count == post)
+					return i;
+			}
+			break;
 	}
 
 	return -1;
@@ -1573,7 +1659,7 @@ cs_err CAPSTONE_API cs_regs_access(csh ud, const cs_insn *insn,
 	handle->errnum = CS_ERR_DIET;
 	return CS_ERR_DIET;
 #else
-	if (!handle->detail) {
+	if (!handle->detail_opt) {
 		handle->errnum = CS_ERR_DETAIL;
 		return CS_ERR_DETAIL;
 	}

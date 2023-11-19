@@ -115,6 +115,50 @@ def get_eflag_name(eflag):
     else: 
         return None
 
+def get_fpu_flag_name(flag):
+    if flag == X86_FPU_FLAGS_MODIFY_C0:
+        return "MOD_C0"
+    elif flag == X86_FPU_FLAGS_MODIFY_C1:
+        return "MOD_C1"
+    elif flag == X86_FPU_FLAGS_MODIFY_C2:
+        return "MOD_C2"
+    elif flag == X86_FPU_FLAGS_MODIFY_C3:
+        return "MOD_C3"
+    elif flag == X86_FPU_FLAGS_RESET_C0:
+        return "RESET_C0"
+    elif flag == X86_FPU_FLAGS_RESET_C1:
+        return "RESET_C1"
+    elif flag == X86_FPU_FLAGS_RESET_C2:
+        return "RESET_C2"
+    elif flag == X86_FPU_FLAGS_RESET_C3:
+        return "RESET_C3"
+    elif flag == X86_FPU_FLAGS_SET_C0:
+        return "SET_C0"
+    elif flag == X86_FPU_FLAGS_SET_C1:
+        return "SET_C1"
+    elif flag == X86_FPU_FLAGS_SET_C2:
+        return "SET_C2"
+    elif flag == X86_FPU_FLAGS_SET_C3:
+        return "SET_C3"
+    elif flag == X86_FPU_FLAGS_UNDEFINED_C0:
+        return "UNDEF_C0"
+    elif flag == X86_FPU_FLAGS_UNDEFINED_C1:
+        return "UNDEF_C1"
+    elif flag == X86_FPU_FLAGS_UNDEFINED_C2:
+        return "UNDEF_C2"
+    elif flag == X86_FPU_FLAGS_UNDEFINED_C3:
+        return "UNDEF_C3"
+    elif flag == X86_FPU_FLAGS_TEST_C0:
+        return "TEST_C0"
+    elif flag == X86_FPU_FLAGS_TEST_C1:
+        return "TEST_C1"
+    elif flag == X86_FPU_FLAGS_TEST_C2:
+        return "TEST_C2"
+    elif flag == X86_FPU_FLAGS_TEST_C3:
+        return "TEST_C3"
+    else:
+        return None
+
 
 def print_insn_detail(mode, insn):
     def print_string_hex(comment, str):
@@ -146,19 +190,19 @@ def print_insn_detail(mode, insn):
     print("\tmodrm: 0x%x" % (insn.modrm))
 
     # print modRM offset
-    if insn.modrm_offset != 0:
-        print("\tmodrm_offset: 0x%x" % (insn.modrm_offset))
+    if insn.encoding.modrm_offset != 0:
+        print("\tmodrm_offset: 0x%x" % (insn.encoding.modrm_offset))
 
     # print displacement value
-    print("\tdisp: 0x%s" % to_x_32(insn.disp))
+    print("\tdisp: 0x%s" % to_x(insn.disp))
 
     # print displacement offset (offset into instruction bytes)
-    if insn.disp_offset != 0:
-        print("\tdisp_offset: 0x%x" % (insn.disp_offset))
+    if insn.encoding.disp_offset != 0:
+        print("\tdisp_offset: 0x%x" % (insn.encoding.disp_offset))
 
     # print displacement size
-    if insn.disp_size != 0:
-        print("\tdisp_size: 0x%x" % (insn.disp_size))
+    if insn.encoding.disp_size != 0:
+        print("\tdisp_size: 0x%x" % (insn.encoding.disp_size))
 
     # SIB is not available in 16-bit mode
     if (mode & CS_MODE_16 == 0):
@@ -198,10 +242,10 @@ def print_insn_detail(mode, insn):
         for i in range(count):
             op = insn.op_find(X86_OP_IMM, i + 1)
             print("\t\timms[%u]: 0x%s" % (i + 1, to_x(op.imm)))
-            if insn.imm_offset != 0:
-                print("\timm_offset: 0x%x" % (insn.imm_offset))
-            if insn.imm_size != 0:
-                print("\timm_size: 0x%x" % (insn.imm_size))
+            if insn.encoding.imm_offset != 0:
+                print("\timm_offset: 0x%x" % (insn.encoding.imm_offset))
+            if insn.encoding.imm_size != 0:
+                print("\timm_size: 0x%x" % (insn.encoding.imm_size))
 
     if len(insn.operands) > 0:
         print("\top_count: %u" % len(insn.operands))
@@ -236,11 +280,11 @@ def print_insn_detail(mode, insn):
             print("\t\toperands[%u].size: %u" % (c, i.size))
 
             if i.access == CS_AC_READ:
-                print("\t\toperands[%u].access: READ\n" % (c))
+                print("\t\toperands[%u].access: READ" % (c))
             elif i.access == CS_AC_WRITE:
-                print("\t\toperands[%u].access: WRITE\n" % (c))
+                print("\t\toperands[%u].access: WRITE" % (c))
             elif i.access == CS_AC_READ | CS_AC_WRITE:
-                print("\t\toperands[%u].access: READ | WRITE\n" % (c))
+                print("\t\toperands[%u].access: READ | WRITE" % (c))
 
     (regs_read, regs_write) = insn.regs_access()
 
@@ -255,13 +299,22 @@ def print_insn_detail(mode, insn):
         for r in regs_write:
             print(" %s" %(insn.reg_name(r)), end="")
         print("")
-        
-    if insn.eflags:
+    
+    if insn.eflags or insn.fpu_flags:
         updated_flags = []
-        for i in range(0,46):
-            if insn.eflags & (1 << i):
-                updated_flags.append(get_eflag_name(1 << i))
-        print("\tEFLAGS: %s" % (','.join(p for p in updated_flags)))
+        for group in insn.groups:
+            if group == X86_GRP_FPU:
+                for i in range(64):
+                    if insn.fpu_flags & (1 << i):
+                        updated_flags.append(get_fpu_flag_name(1 << i))
+                print("\tFPU_FLAGS: %s" % (' '.join(p for p in updated_flags)))
+                break
+
+        if not updated_flags:
+            for i in range(64):
+                if insn.eflags & (1 << i):
+                    updated_flags.append(get_eflag_name(1 << i))
+            print("\tEFLAGS: %s" % (' '.join(p for p in updated_flags)))
         
 
 # ## Test class Cs

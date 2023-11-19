@@ -23,7 +23,7 @@ static void print_string_hex(const char *comment, unsigned char *str, size_t len
 
 	printf("%s", comment);
 	for (c = str; c < str + len; c++) {
-		printf(" 0x%02x", *c & 0xff);
+		printf("0x%02x ", *c & 0xff);
 	}
 
 	printf("\n");
@@ -135,7 +135,7 @@ static void test()
 
 #define MW65C02_CODE \
 	"\x07\x12\x27\x12\x47\x12\x67\x12\x87\x12\xa7\x12\xc7\x12\xe7\x12" \
-	"\x0f\x12\xfd\x4f\x12\xfd\x8f\x12\xfd\xcf\x12\xfd"
+	"\x10\xfe\x0f\x12\xfd\x4f\x12\xfd\x8f\x12\xfd\xcf\x12\xfd"
 
 #define M65816_CODE \
 	"\xa9\x34\x12" "\xad\x34\x12" "\xbd\x34\x12" "\xb9\x34\x12" \
@@ -197,7 +197,7 @@ static void test()
 
 			printf("****************\n");
 			printf("Platform: %s\n", platforms[i].comment);
-			print_string_hex("Code:", platforms[i].code, platforms[i].size);
+			print_string_hex("Code: ", platforms[i].code, platforms[i].size);
 			printf("Disasm:\n");
 
 			for (j = 0; j < count; j++) {

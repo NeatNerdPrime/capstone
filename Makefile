@@ -10,7 +10,7 @@ V ?= 0
 
 OS := $(shell uname)
 ifeq ($(OS),Darwin)
-LIBARCHS ?= x86_64
+LIBARCHS ?= x86_64 arm64
 PREFIX ?= /usr/local
 endif
 
@@ -34,6 +34,10 @@ RANLIB = $(CROSS)ranlib
 STRIP = $(CROSS)strip
 endif
 
+ifeq ($(OS),OS/390)
+RANLIB = touch
+endif
+
 ifneq (,$(findstring yes,$(CAPSTONE_DIET)))
 CFLAGS ?= -Os
 CFLAGS += -DCAPSTONE_DIET
@@ -41,11 +45,21 @@ else
 CFLAGS ?= -O3
 endif
 
+# C99 has been enforced elsewhere like xcode
+CFLAGS += -std=gnu99
+
 ifneq (,$(findstring yes,$(CAPSTONE_X86_ATT_DISABLE)))
 CFLAGS += -DCAPSTONE_X86_ATT_DISABLE
 endif
 
+ifeq ($(CC),xlc)
+CFLAGS += -qcpluscmt -qkeyword=inline -qlanglvl=extc1x -Iinclude
+ifneq ($(OS),OS/390)
+CFLAGS += -fPIC
+endif
+else
 CFLAGS += -fPIC -Wall -Wwrite-strings -Wmissing-prototypes -Iinclude
+endif
 
 ifeq ($(CAPSTONE_USE_SYS_DYN_MEM),yes)
 CFLAGS += -DCAPSTONE_USE_SYS_DYN_MEM
@@ -88,10 +102,10 @@ LIBDATADIR = $(LIBDIR)
 
 ifndef USE_GENERIC_LIBDATADIR
 ifeq ($(UNAME_S), FreeBSD)
-LIBDATADIR = $(PREFIX)/libdata
+LIBDATADIR = $(DESTDIR)$(PREFIX)/libdata
 endif
 ifeq ($(UNAME_S), DragonFly)
-LIBDATADIR = $(PREFIX)/libdata
+LIBDATADIR = $(DESTDIR)$(PREFIX)/libdata
 endif
 endif
 
@@ -112,14 +126,15 @@ ifneq (,$(findstring arm,$(CAPSTONE_ARCHS)))
 	LIBOBJ_ARM += $(LIBSRC_ARM:%.c=$(OBJDIR)/%.o)
 endif
 
-DEP_ARM64 =
-DEP_ARM64 += $(wildcard arch/AArch64/AArch64*.inc)
+DEP_AARCH64 =
+DEP_AARCH64 += $(wildcard arch/AArch64/AArch64*.inc)
 
-LIBOBJ_ARM64 =
+LIBOBJ_AARCH64 =
 ifneq (,$(findstring aarch64,$(CAPSTONE_ARCHS)))
 	CFLAGS += -DCAPSTONE_HAS_ARM64
-	LIBSRC_ARM64 += $(wildcard arch/AArch64/AArch64*.c)
-	LIBOBJ_ARM64 += $(LIBSRC_ARM64:%.c=$(OBJDIR)/%.o)
+	CFLAGS += -DCAPSTONE_HAS_AARCH64
+	LIBSRC_AARCH64 += $(wildcard arch/AArch64/AArch64*.c)
+	LIBOBJ_AARCH64 += $(LIBSRC_AARCH64:%.c=$(OBJDIR)/%.o)
 endif
 
 
@@ -144,6 +159,14 @@ ifneq (,$(findstring mips,$(CAPSTONE_ARCHS)))
 	LIBOBJ_MIPS += $(LIBSRC_MIPS:%.c=$(OBJDIR)/%.o)
 endif
 
+DEP_SH = $(wildcard arch/SH/SH*.inc)
+
+LIBOBJ_SH =
+ifneq (,$(findstring sh,$(CAPSTONE_ARCHS)))
+	CFLAGS += -DCAPSTONE_HAS_SH
+	LIBSRC_SH += $(wildcard arch/SH/SH*.c)
+	LIBOBJ_SH += $(LIBSRC_SH:%.c=$(OBJDIR)/%.o)
+endif
 
 DEP_PPC =
 DEP_PPC += $(wildcard arch/PowerPC/PPC*.inc)
@@ -292,12 +315,22 @@ ifneq (,$(findstring bpf,$(CAPSTONE_ARCHS)))
 	LIBOBJ_BPF += $(LIBSRC_BPF:%.c=$(OBJDIR)/%.o)
 endif
 
+DEP_TRICORE =
+DEP_TRICORE +=$(wildcard arch/TriCore/TriCore*.inc)
+
+LIBOBJ_TRICORE =
+ifneq (,$(findstring tricore,$(CAPSTONE_ARCHS)))
+	CFLAGS += -DCAPSTONE_HAS_TRICORE
+	LIBSRC_TRICORE += $(wildcard arch/TriCore/TriCore*.c)
+	LIBOBJ_TRICORE += $(LIBSRC_TRICORE:%.c=$(OBJDIR)/%.o)
+endif
+
 
 LIBOBJ =
-LIBOBJ += $(OBJDIR)/cs.o $(OBJDIR)/utils.o $(OBJDIR)/SStream.o $(OBJDIR)/MCInstrDesc.o $(OBJDIR)/MCRegisterInfo.o
-LIBOBJ += $(LIBOBJ_ARM) $(LIBOBJ_ARM64) $(LIBOBJ_M68K) $(LIBOBJ_MIPS) $(LIBOBJ_PPC) $(LIBOBJ_RISCV) $(LIBOBJ_SPARC) $(LIBOBJ_SYSZ)
+LIBOBJ += $(OBJDIR)/cs.o $(OBJDIR)/utils.o $(OBJDIR)/SStream.o $(OBJDIR)/MCInstrDesc.o $(OBJDIR)/MCRegisterInfo.o $(OBJDIR)/MCInst.o $(OBJDIR)/MCInstPrinter.o $(OBJDIR)/Mapping.o
+LIBOBJ += $(LIBOBJ_ARM) $(LIBOBJ_AARCH64) $(LIBOBJ_M68K) $(LIBOBJ_MIPS) $(LIBOBJ_PPC) $(LIBOBJ_RISCV) $(LIBOBJ_SPARC) $(LIBOBJ_SYSZ) $(LIBOBJ_SH)
 LIBOBJ += $(LIBOBJ_X86) $(LIBOBJ_XCORE) $(LIBOBJ_TMS320C64X) $(LIBOBJ_M680X) $(LIBOBJ_EVM) $(LIBOBJ_MOS65XX) $(LIBOBJ_WASM) $(LIBOBJ_BPF)
-LIBOBJ += $(OBJDIR)/MCInst.o
+LIBOBJ += $(LIBOBJ_TRICORE)
 
 
 ifeq ($(PKG_EXTRA),)
@@ -335,7 +368,11 @@ endif
 else
 CFLAGS += $(foreach arch,$(LIBARCHS),-arch $(arch))
 LDFLAGS += $(foreach arch,$(LIBARCHS),-arch $(arch))
+ifeq ($(OS), AIX)
+$(LIBNAME)_LDFLAGS += -qmkshrobj
+else
 $(LIBNAME)_LDFLAGS += -shared
+endif
 # Cygwin?
 IS_CYGWIN := $(shell $(CC) -dumpmachine 2>/dev/null | grep -i cygwin | wc -l)
 ifeq ($(IS_CYGWIN),1)
@@ -367,7 +404,7 @@ ifeq ($(CAPSTONE_SHARED),yes)
 ifeq ($(IS_MINGW),1)
 LIBRARY = $(BLDIR)/$(LIBNAME).$(VERSION_EXT)
 else ifeq ($(IS_CYGWIN),1)
-LIBRARY = $(BLDIR)/$(LIBNAME).$(VERSION_EXT)
+LIBRARY = $(BLDIR)/$(LIBNAME).$(EXT)
 else	# *nix
 LIBRARY = $(BLDIR)/lib$(LIBNAME).$(VERSION_EXT)
 CFLAGS += -fvisibility=hidden
@@ -393,10 +430,8 @@ ifeq (,$(findstring yes,$(CAPSTONE_BUILD_CORE_ONLY)))
 	@V=$(V) CC=$(CC) $(MAKE) -C cstool
 ifndef BUILDDIR
 	$(MAKE) -C tests
-	$(MAKE) -C suite/fuzz
 else
 	$(MAKE) -C tests BUILDDIR=$(BLDIR)
-	$(MAKE) -C suite/fuzz BUILDDIR=$(BLDIR)
 endif
 	$(call install-library,$(BLDIR)/tests/)
 endif
@@ -414,10 +449,11 @@ endif
 $(LIBOBJ): config.mk
 
 $(LIBOBJ_ARM): $(DEP_ARM)
-$(LIBOBJ_ARM64): $(DEP_ARM64)
+$(LIBOBJ_AARCH64): $(DEP_AARCH64)
 $(LIBOBJ_M68K): $(DEP_M68K)
 $(LIBOBJ_MIPS): $(DEP_MIPS)
 $(LIBOBJ_PPC): $(DEP_PPC)
+$(LIBOBJ_SH): $(DEP_SH)
 $(LIBOBJ_SPARC): $(DEP_SPARC)
 $(LIBOBJ_SYSZ): $(DEP_SYSZ)
 $(LIBOBJ_X86): $(DEP_X86)
@@ -429,6 +465,7 @@ $(LIBOBJ_RISCV): $(DEP_RISCV)
 $(LIBOBJ_WASM): $(DEP_WASM)
 $(LIBOBJ_MOS65XX): $(DEP_MOS65XX)
 $(LIBOBJ_BPF): $(DEP_BPF)
+$(LIBOBJ_TRICORE): $(DEP_TRICORE)
 
 ifeq ($(CAPSTONE_STATIC),yes)
 $(ARCHIVE): $(LIBOBJ)
@@ -465,14 +502,18 @@ endif
 	$(INSTALL_DATA) include/capstone/*.h $(DESTDIR)$(INCDIR)/$(LIBNAME)
 	mkdir -p $(PKGCFGDIR)
 	$(INSTALL_DATA) $(PKGCFGF) $(PKGCFGDIR)
+ifeq (,$(findstring yes,$(CAPSTONE_BUILD_CORE_ONLY)))
 	mkdir -p $(BINDIR)
 	$(INSTALL_LIB) cstool/cstool $(BINDIR)
+endif
 
 uninstall:
 	rm -rf $(DESTDIR)$(INCDIR)/$(LIBNAME)
 	rm -f $(LIBDIR)/lib$(LIBNAME).*
 	rm -f $(PKGCFGDIR)/$(LIBNAME).pc
+ifeq (,$(findstring yes,$(CAPSTONE_BUILD_CORE_ONLY)))
 	rm -f $(BINDIR)/cstool
+endif
 
 clean:
 	rm -f $(LIBOBJ)
@@ -480,9 +521,9 @@ clean:
 	rm -f $(PKGCFGF)
 	rm -f $(AUTODEPS)
 	[ "${ANDROID}" = "1" ] && rm -rf android-ndk-* || true
-	$(MAKE) -C cstool clean
 
 ifeq (,$(findstring yes,$(CAPSTONE_BUILD_CORE_ONLY)))
+	$(MAKE) -C cstool clean
 	$(MAKE) -C tests clean
 	$(MAKE) -C suite/fuzz clean
 	rm -f $(BLDIR)/tests/lib$(LIBNAME).$(EXT)
@@ -510,18 +551,29 @@ dist:
 	git archive --format=tar.gz --prefix=capstone-$(DIST_VERSION)/ $(TAG) > capstone-$(DIST_VERSION).tgz
 	git archive --format=zip --prefix=capstone-$(DIST_VERSION)/ $(TAG) > capstone-$(DIST_VERSION).zip
 
-TESTS  = test_basic test_detail test_arm test_arm64 test_m68k test_mips test_ppc test_sparc	
+TESTS  = test_basic test_detail test_arm test_aarch64 test_m68k test_mips test_ppc test_sparc test_tricore
 TESTS += test_systemz test_x86 test_xcore test_iter test_evm test_riscv test_mos65xx test_wasm test_bpf
-TESTS += test_basic.static test_detail.static test_arm.static test_arm64.static
+TESTS += test_basic.static test_detail.static test_arm.static test_aarch64.static
 TESTS += test_m68k.static test_mips.static test_ppc.static test_sparc.static
 TESTS += test_systemz.static test_x86.static test_xcore.static test_m680x.static
 TESTS += test_skipdata test_skipdata.static test_iter.static test_evm.static test_riscv.static
 TESTS += test_mos65xx.static test_wasm.static test_bpf.static
-check: $(TESTS) fuzztest fuzzallcorp
+
+check: $(TESTS)
+
+checkfuzz: fuzztest fuzzallcorp
+
 test_%:
 	./tests/$@ > /dev/null && echo OK || echo FAILED
 
 FUZZ_INPUTS = $(shell find suite/MC -type f -name '*.cs')
+
+buildfuzz:
+ifndef BUILDDIR
+	$(MAKE) -C suite/fuzz
+else
+	$(MAKE) -C suite/fuzz BUILDDIR=$(BLDIR)
+endif
 
 fuzztest:
 	./suite/fuzz/fuzz_disasm $(FUZZ_INPUTS)
@@ -556,9 +608,12 @@ define install-library
 endef
 endif
 
+ifeq ($(AR_FLAGS),)
+AR_FLAGS := q
+endif
 
 define create-archive
-	$(AR) q $(ARCHIVE) $(LIBOBJ)
+	$(AR) $(AR_FLAGS) $(ARCHIVE) $(LIBOBJ)
 	$(RANLIB) $(ARCHIVE)
 endef
 
@@ -577,5 +632,7 @@ define generate-pkgcfg
 	echo 'includedir=$(INCDIR)/capstone' >> $(PKGCFGF)
 	echo 'archive=$${libdir}/libcapstone.a' >> $(PKGCFGF)
 	echo 'Libs: -L$${libdir} -lcapstone' >> $(PKGCFGF)
+	echo 'Libs.private: -L$${libdir} -l:libcapstone.a' >> $(PKGCFGF)
 	echo 'Cflags: -I$${includedir}' >> $(PKGCFGF)
+	echo 'archs=${CAPSTONE_ARCHS}' >> $(PKGCFGF)
 endef
